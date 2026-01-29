@@ -1,4 +1,5 @@
 import os
+import json
 from flask import Flask, request, jsonify
 import google.generativeai as genai
 
@@ -16,6 +17,44 @@ def build_cors_response(data, status_code=200):
     response.headers.add("Access-Control-Allow-Headers", "*")
     response.headers.add("Access-Control-Allow-Methods", "*")
     return response, status_code
+
+# ■■■ 知識データを読み込む関数 ■■■
+def load_knowledge():
+    try:
+        with open('knowledge.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading knowledge: {e}")
+        return []
+
+# ■■■ 検索ロジック（キーワード検索） ■■■
+def search_knowledge_base(query):
+    data = load_knowledge()
+    results = []
+    
+    # クエリを単語に分解（簡易的な検索）
+    keywords = query.replace("　", " ").split()
+    
+    for item in data:
+        # タイトルか本文にキーワードが含まれていればヒットとする
+        text_to_search = (item['title'] + item['content']).lower()
+        
+        # すべてのキーワードが含まれているかチェック（AND検索）
+        # ※もっと緩くしたい場合はここを調整します
+        match_count = 0
+        for k in keywords:
+            if k.lower() in text_to_search:
+                match_count += 1
+        
+        # 1つでもキーワードがヒットしたら候補に入れる
+        if match_count > 0:
+            results.append(f"【{item['title']}】\n{item['content']}")
+
+    if not results:
+        # ヒットしなかった場合のデフォルトメッセージ
+        return ["関連するマニュアルは見つかりませんでした。一般的な回答を作成します。"]
+    
+    return results
 
 @app.route('/', methods=['GET'])
 def home():
@@ -37,43 +76,45 @@ def generate_reply():
         ticket_description = data.get('description', '')
         ticket_subject = data.get('subject', '')
 
-        # ■■■ ここが修正ポイント：モデルの自動検出 ■■■
-        # 「文章生成(generateContent)」に対応しているモデルをリストアップして、
-        # 最初に見つかったものを自動で使います。
-        target_model_name = 'gemini-pro' # フォールバック用
+        # モデル自動検出
+        target_model_name = 'gemini-pro'
         try:
             for m in genai.list_models():
                 if 'generateContent' in m.supported_generation_methods:
                     target_model_name = m.name
-                    print(f"DEBUG: Found available model: {target_model_name}") # ログ確認用
                     break
-        except Exception as e:
-            print(f"Warning: Could not list models. Using default. {e}")
+        except:
+            pass
 
-        # RAG検索（ダミー）
+        # 1. 検索実行
         search_query = f"{ticket_subject} {ticket_description}"
-        # search_knowledge_base関数をインライン定義
-        docs = [
-            "返品ポリシー: 到着後30日以内なら返品可能です。",
-            "返金: 5営業日以内に処理されます。"
-        ]
-        context_text = "\n".join(docs)
+        retrieved_docs = search_knowledge_base(search_query)
+        context_text = "\n\n".join(retrieved_docs)
 
+        # 2. プロンプト作成
         prompt = f"""
-        あなたはカスタマーサポートです。以下の参考情報を使って返信を作成してください。
-        [問い合わせ]
-        {ticket_description}
-        [参考情報]
+        あなたはカスタマーサポート担当者です。
+        以下の[社内マニュアル]を元に、ユーザーへの返信を作成してください。
+
+        [ユーザーの問い合わせ]
+        件名: {ticket_subject}
+        本文: {ticket_description}
+
+        [社内マニュアル]
         {context_text}
+
+        [制約]
+        - マニュアルに記載がある場合は、その手順を案内してください。
+        - マニュアルに情報がない場合は、正直に「担当者に確認します」と伝えてください。
+        - 丁寧なビジネスメールの形式で書いてください。
         """
 
-        # 自動検出したモデル名で生成する
         model = genai.GenerativeModel(target_model_name)
         response = model.generate_content(prompt)
 
         return build_cors_response({
             "reply_body": response.text,
-            "sources": docs
+            "sources": retrieved_docs
         })
 
     except Exception as e:
