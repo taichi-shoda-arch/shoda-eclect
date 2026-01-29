@@ -4,18 +4,12 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# APIキー設定
+# ここでAPIキーを読み込みますが、読み込めなくてもエラーにせず進みます
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-def search_knowledge_base(query):
-    return [
-        "マニュアル: 電源が入らない場合は、コンセントの抜き差しを試してください。",
-        "マニュアル: それでも直らない場合は、リセットボタンを5秒長押ししてください。"
-    ]
-
-# ■■■ ここが修正ポイント：手動でCORSヘッダーを付ける関数 ■■■
+# 手動CORSヘッダー付与関数
 def build_cors_response(data, status_code=200):
     response = jsonify(data)
     response.headers.add("Access-Control-Allow-Origin", "*")
@@ -29,24 +23,35 @@ def home():
 
 @app.route('/generate', methods=['POST', 'OPTIONS'])
 def generate_reply():
-    # 1. プリフライトリクエスト(OPTIONS)への対応
     if request.method == 'OPTIONS':
         return build_cors_response({'status': 'ok'})
 
-    # 2. 本番リクエスト(POST)の処理
     try:
+        # ■■■ 診断ポイント ■■■
+        # キーがない場合、サーバーが見えている環境変数の「名前リスト」を返します
         if not GEMINI_API_KEY:
-            return build_cors_response({"error": "API Key not found"}, 500)
+            # 値(Value)は返さず、キー名(Key)だけをリストにします
+            available_keys = list(os.environ.keys())
+            print(f"DEBUG: Available keys: {available_keys}") # Renderログ用
+            
+            return build_cors_response({
+                "error": "API Key not found",
+                "message": "Renderの設定画面と名前が一致しているか確認してください。",
+                "server_sees_these_keys": available_keys  # サーバーが見ているキー一覧
+            }, 500)
 
         data = request.json
-        # データが空の場合の対策
         if not data:
             return build_cors_response({"error": "No JSON data received"}, 400)
 
         ticket_description = data.get('description', '')
         ticket_subject = data.get('subject', '')
 
-        # RAG検索 & Gemini生成
+        # ダミーRAG検索
+        # 本来のsearch_knowledge_base関数
+        def search_knowledge_base(query):
+             return ["マニュアル: 返品は購入後30日以内です。"]
+
         search_query = f"{ticket_subject} {ticket_description}"
         retrieved_docs = search_knowledge_base(search_query)
         context_text = "\n".join(retrieved_docs)
@@ -62,7 +67,6 @@ def generate_reply():
         model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt)
 
-        # 成功レスポンス（CORS付き）
         return build_cors_response({
             "reply_body": response.text,
             "sources": retrieved_docs
@@ -70,7 +74,6 @@ def generate_reply():
 
     except Exception as e:
         print(f"Error: {e}")
-        # エラーレスポンス（CORS付き）
         return build_cors_response({"error": str(e)}, 500)
 
 if __name__ == '__main__':
