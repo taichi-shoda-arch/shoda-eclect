@@ -4,12 +4,12 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# ここでAPIキーを読み込みますが、読み込めなくてもエラーにせず進みます
+# APIキー設定
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# 手動CORSヘッダー付与関数
+# 手動CORSヘッダー付与関数（これが最強のCORS対策です）
 def build_cors_response(data, status_code=200):
     response = jsonify(data)
     response.headers.add("Access-Control-Allow-Origin", "*")
@@ -23,22 +23,15 @@ def home():
 
 @app.route('/generate', methods=['POST', 'OPTIONS'])
 def generate_reply():
+    # 1. プリフライトリクエスト(OPTIONS)への対応
     if request.method == 'OPTIONS':
         return build_cors_response({'status': 'ok'})
 
+    # 2. 本番リクエスト(POST)の処理
     try:
-        # ■■■ 診断ポイント ■■■
-        # キーがない場合、サーバーが見えている環境変数の「名前リスト」を返します
+        # キーがない場合のエラー
         if not GEMINI_API_KEY:
-            # 値(Value)は返さず、キー名(Key)だけをリストにします
-            available_keys = list(os.environ.keys())
-            print(f"DEBUG: Available keys: {available_keys}") # Renderログ用
-            
-            return build_cors_response({
-                "error": "API Key not found",
-                "message": "Renderの設定画面と名前が一致しているか確認してください。",
-                "server_sees_these_keys": available_keys  # サーバーが見ているキー一覧
-            }, 500)
+            return build_cors_response({"error": "API Key not found in server settings"}, 500)
 
         data = request.json
         if not data:
@@ -47,26 +40,42 @@ def generate_reply():
         ticket_description = data.get('description', '')
         ticket_subject = data.get('subject', '')
 
-        # ダミーRAG検索
-        # 本来のsearch_knowledge_base関数
+        # --- ここからRAG検索ロジック ---
+        # ※今はダミーですが、将来ここをPineconeなどの検索コードに置き換えます
         def search_knowledge_base(query):
-             return ["マニュアル: 返品は購入後30日以内です。"]
+            return [
+                "返品ポリシー: 商品到着後30日以内であれば、未使用に限り全額返金可能です。",
+                "返金処理: 通常、返品受領から5営業日以内に完了します。",
+                "送料: お客様都合の返品の場合、送料はお客様負担となります。"
+            ]
+        # ---------------------------
 
         search_query = f"{ticket_subject} {ticket_description}"
         retrieved_docs = search_knowledge_base(search_query)
         context_text = "\n".join(retrieved_docs)
 
+        # AIへの指示（プロンプト）
         prompt = f"""
-        あなたはカスタマーサポートです。以下の参考情報を使って、問い合わせへの返信を作成してください。
-        [問い合わせ]
-        {ticket_description}
+        あなたはカスタマーサポートの担当者です。
+        以下の「参考情報」を元に、ユーザーの問い合わせに対する丁寧な返信メールを作成してください。
+
+        [ユーザーの問い合わせ]
+        件名: {ticket_subject}
+        本文: {ticket_description}
+
         [参考情報]
         {context_text}
+
+        [制約]
+        - 挨拶から始めてください。
+        - 参考情報にないことは捏造しないでください。
+        - 簡潔かつ丁寧な日本語で書いてください。
         """
 
         model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt)
 
+        # 成功レスポンス
         return build_cors_response({
             "reply_body": response.text,
             "sources": retrieved_docs
