@@ -9,7 +9,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# 手動CORSヘッダー付与関数（これが最強のCORS対策です）
+# 手動CORSヘッダー付与関数
 def build_cors_response(data, status_code=200):
     response = jsonify(data)
     response.headers.add("Access-Control-Allow-Origin", "*")
@@ -23,15 +23,12 @@ def home():
 
 @app.route('/generate', methods=['POST', 'OPTIONS'])
 def generate_reply():
-    # 1. プリフライトリクエスト(OPTIONS)への対応
     if request.method == 'OPTIONS':
         return build_cors_response({'status': 'ok'})
 
-    # 2. 本番リクエスト(POST)の処理
     try:
-        # キーがない場合のエラー
         if not GEMINI_API_KEY:
-            return build_cors_response({"error": "API Key not found in server settings"}, 500)
+            return build_cors_response({"error": "API Key not found"}, 500)
 
         data = request.json
         if not data:
@@ -40,45 +37,43 @@ def generate_reply():
         ticket_description = data.get('description', '')
         ticket_subject = data.get('subject', '')
 
-        # --- ここからRAG検索ロジック ---
-        # ※今はダミーですが、将来ここをPineconeなどの検索コードに置き換えます
-        def search_knowledge_base(query):
-            return [
-                "返品ポリシー: 商品到着後30日以内であれば、未使用に限り全額返金可能です。",
-                "返金処理: 通常、返品受領から5営業日以内に完了します。",
-                "送料: お客様都合の返品の場合、送料はお客様負担となります。"
-            ]
-        # ---------------------------
+        # ■■■ ここが修正ポイント：モデルの自動検出 ■■■
+        # 「文章生成(generateContent)」に対応しているモデルをリストアップして、
+        # 最初に見つかったものを自動で使います。
+        target_model_name = 'gemini-pro' # フォールバック用
+        try:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    target_model_name = m.name
+                    print(f"DEBUG: Found available model: {target_model_name}") # ログ確認用
+                    break
+        except Exception as e:
+            print(f"Warning: Could not list models. Using default. {e}")
 
+        # RAG検索（ダミー）
         search_query = f"{ticket_subject} {ticket_description}"
-        retrieved_docs = search_knowledge_base(search_query)
-        context_text = "\n".join(retrieved_docs)
+        # search_knowledge_base関数をインライン定義
+        docs = [
+            "返品ポリシー: 到着後30日以内なら返品可能です。",
+            "返金: 5営業日以内に処理されます。"
+        ]
+        context_text = "\n".join(docs)
 
-        # AIへの指示（プロンプト）
         prompt = f"""
-        あなたはカスタマーサポートの担当者です。
-        以下の「参考情報」を元に、ユーザーの問い合わせに対する丁寧な返信メールを作成してください。
-
-        [ユーザーの問い合わせ]
-        件名: {ticket_subject}
-        本文: {ticket_description}
-
+        あなたはカスタマーサポートです。以下の参考情報を使って返信を作成してください。
+        [問い合わせ]
+        {ticket_description}
         [参考情報]
         {context_text}
-
-        [制約]
-        - 挨拶から始めてください。
-        - 参考情報にないことは捏造しないでください。
-        - 簡潔かつ丁寧な日本語で書いてください。
         """
 
-        model = genai.GenerativeModel('gemini-pro')
+        # 自動検出したモデル名で生成する
+        model = genai.GenerativeModel(target_model_name)
         response = model.generate_content(prompt)
 
-        # 成功レスポンス
         return build_cors_response({
             "reply_body": response.text,
-            "sources": retrieved_docs
+            "sources": docs
         })
 
     except Exception as e:
