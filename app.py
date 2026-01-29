@@ -72,7 +72,7 @@ def generate_reply():
         - 簡潔かつ丁寧な日本語で書いてください。
         """
 
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-pro')
         response = model.generate_content(prompt)
 
         # 成功レスポンス
